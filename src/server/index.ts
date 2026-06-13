@@ -463,7 +463,7 @@ const io = new SocketIOServer(httpServer, {
 // Set up Socket.IO event controllers
 setupSocketIO(io);
 
-const PORT = process.env.SIGNALING_PORT || 3001;
+const PORT = process.env.PORT || process.env.SIGNALING_PORT || 3001;
 
 async function startServer() {
   try {
