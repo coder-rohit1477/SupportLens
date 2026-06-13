@@ -34,3 +34,17 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Google Gemini AI Summaries Setup
+
+To enable real, LLM-powered session summaries:
+
+1. Obtain a Gemini API Key from Google AI Studio.
+2. Open the `.env` file in the root of the project.
+3. Set the `GEMINI_API_KEY` environment variable:
+   ```env
+   GEMINI_API_KEY="your-gemini-api-key"
+   ```
+4. Restart the backend server.
+
+*Note: If no API key is specified, the system automatically falls back to a local keyword-based summary generator, ensuring the endpoint continues to function without crashing.*

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
@@ -170,8 +171,53 @@ app.get('/api/sessions/:id', async (req: Request, res: Response) => {
 });
 
 /**
+ * Helper to generate a sensible fallback summary based on message content.
+ */
+function getFallbackSummary(messages: any[]): {
+  issue: string;
+  resolution: string;
+  status: 'resolved' | 'unresolved' | 'escalated';
+  summary: string;
+} {
+  if (messages.length === 0) {
+    return {
+      issue: 'N/A',
+      resolution: 'N/A',
+      status: 'unresolved',
+      summary: 'No chat activity was recorded for this session.',
+    };
+  }
+
+  const transcript = messages.map((m) => `${m.senderName}: ${m.type === 'file' ? `[File: ${m.fileName}]` : m.text}`).join('\n');
+  const hasLogin = transcript.toLowerCase().includes('login');
+  const hasError = transcript.toLowerCase().includes('error');
+
+  let issue = 'General Inquiry';
+  let resolution = 'Information provided';
+  let status: 'resolved' | 'unresolved' | 'escalated' = 'resolved';
+  let summary = 'The customer and agent discussed general support topics.';
+
+  if (hasLogin) {
+    issue = 'Login Difficulty';
+    resolution = 'Password reset instructions provided';
+    summary = 'Customer reported issues logging into their account. Agent provided step-by-step guidance for a password reset.';
+  } else if (hasError) {
+    issue = 'Technical Error';
+    resolution = 'Troubleshooting steps performed';
+    summary = 'Customer encountered a technical error in the application. Agent assisted with clearing cache and refreshing.';
+  }
+
+  return {
+    issue,
+    resolution,
+    status,
+    summary,
+  };
+}
+
+/**
  * POST /api/sessions/:id/summary
- * Generates a mock AI summary based on the chat transcript of a session.
+ * Generates an AI summary based on the chat transcript of a session.
  */
 app.post('/api/sessions/:id/summary', async (req: Request, res: Response) => {
   try {
@@ -186,41 +232,131 @@ app.post('/api/sessions/:id/summary', async (req: Request, res: Response) => {
       res.json({
         issue: 'N/A',
         resolution: 'N/A',
-        status: 'No messages found',
+        status: 'unresolved',
         summary: 'No chat activity was recorded for this session.',
       });
       return;
     }
 
-    // Mock logic: generate a deterministic summary based on the presence of keywords
-    const transcript = messages.map((m) => `${m.senderName}: ${m.type === 'file' ? `[File: ${m.fileName}]` : m.text}`).join('\n');
-    const hasLogin = transcript.toLowerCase().includes('login');
-    const hasError = transcript.toLowerCase().includes('error');
+    const transcript = messages
+      .map((m) => `${m.senderName} (${m.senderRole}): ${m.type === 'file' ? `[File: ${m.fileName}]` : m.text}`)
+      .join('\n');
 
-    let issue = 'General Inquiry';
-    let resolution = 'Information provided';
-    const status = 'Resolved';
-    let summary = 'The customer and agent discussed general support topics.';
-
-    if (hasLogin) {
-      issue = 'Login Difficulty';
-      resolution = 'Password reset instructions provided';
-      summary = 'Customer reported issues logging into their account. Agent provided step-by-step guidance for a password reset.';
-    } else if (hasError) {
-      issue = 'Technical Error';
-      resolution = 'Troubleshooting steps performed';
-      summary = 'Customer encountered a technical error in the application. Agent assisted with clearing cache and refreshing.';
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.warn('GEMINI_API_KEY is not defined. Falling back to local keyword-based summary.');
+      const fallback = getFallbackSummary(messages);
+      res.json(fallback);
+      return;
     }
 
-    res.json({
-      issue,
-      resolution,
-      status,
-      summary,
-    });
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: `Analyze this customer support chat transcript and generate a structured summary.
+            
+Transcript:
+${transcript}
+
+Return a JSON object matching this schema:
+{
+  "issue": "A concise description of the main problem reported by the user.",
+  "resolution": "A description of the solution provided, steps taken, or recommended next steps.",
+  "status": "resolved" | "unresolved" | "escalated",
+  "summary": "A professional summary of the discussion."
+}`,
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: 'OBJECT',
+              properties: {
+                issue: { type: 'STRING' },
+                resolution: { type: 'STRING' },
+                status: {
+                  type: 'STRING',
+                  enum: ['resolved', 'unresolved', 'escalated'],
+                },
+                summary: { type: 'STRING' },
+              },
+              required: ['issue', 'resolution', 'status', 'summary'],
+            },
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Gemini API returned status ${response.status}`);
+      }
+
+      const data = (await response.json()) as any;
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) {
+        throw new Error('Invalid response structure from Gemini API');
+      }
+
+      let cleanedText = text.trim();
+      if (cleanedText.startsWith('```')) {
+        cleanedText = cleanedText
+          .replace(/^```(?:json)?\n?/i, '')
+          .replace(/\n?```$/, '')
+          .trim();
+      }
+
+      const result = JSON.parse(cleanedText);
+
+      // Validate fields and normalize status
+      const issue = typeof result.issue === 'string' ? result.issue : 'General Inquiry';
+      const resolution = typeof result.resolution === 'string' ? result.resolution : 'Information provided';
+      let status: 'resolved' | 'unresolved' | 'escalated' = 'unresolved';
+      if (['resolved', 'unresolved', 'escalated'].includes(result.status)) {
+        status = result.status;
+      }
+      const summaryText = typeof result.summary === 'string' ? result.summary : 'A support session was conducted.';
+
+      res.json({
+        issue,
+        resolution,
+        status,
+        summary: summaryText,
+      });
+    } catch (apiError) {
+      console.error('Gemini API call failed, using fallback summary:', apiError);
+      const fallback = getFallbackSummary(messages);
+      res.json(fallback);
+    }
   } catch (error) {
-    console.error('Error generating session summary:', error);
-    res.status(500).json({ error: 'Failed to generate session summary' });
+    console.error('Error generating session summary endpoint:', error);
+    try {
+      const id = req.params.id as string;
+      const messages = await prisma.message.findMany({
+        where: { sessionId: id },
+        orderBy: { createdAt: 'asc' },
+      });
+      const fallback = getFallbackSummary(messages);
+      res.json(fallback);
+    } catch (fallbackError) {
+      console.error('Failed to generate fallback summary:', fallbackError);
+      res.json({
+        issue: 'System Error',
+        resolution: 'Please check server logs',
+        status: 'unresolved',
+        summary: 'An error occurred while generating the summary.',
+      });
+    }
   }
 });
 
