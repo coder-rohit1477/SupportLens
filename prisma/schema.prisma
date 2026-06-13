@@ -1,0 +1,52 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Session {
+  id              String    @id @default(cuid())
+  sessionId       String    @unique
+  startedAt       DateTime  @default(now())
+  endedAt         DateTime?
+  durationSeconds Int?
+
+  @@index([sessionId])
+}
+
+model ParticipantSession {
+  id        String    @id @default(cuid())
+  sessionId String
+  userId    String
+  role      String
+  name      String
+  joinedAt  DateTime  @default(now())
+  leftAt    DateTime?
+
+  @@index([sessionId])
+}
+
+model Message {
+  id         String   @id @default(cuid())
+  sessionId  String
+  senderId   String
+  senderName String
+  senderRole String
+  type       String   @default("text") // "text" | "file"
+  text       String?
+  fileName   String?
+  fileUrl    String?
+  mimeType   String?
+  createdAt  DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+}
